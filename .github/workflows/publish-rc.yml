@@ -1,0 +1,60 @@
+name: Publish RC Python distributions to TestPyPI
+
+on:
+  push:
+    branches:
+      - 'release/**'
+      - 'hotfix/**'
+      - 'support/**'
+  workflow_dispatch:
+
+env:
+  PACKAGE_NAME: outlook-autoreply-helper
+  MODULE_NAME: outlook_outoreply_helper
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-and-publish:
+    name: Build and publish release candidate Python distribution to TestPyPI.
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true        
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Determine package version.
+      run: |
+        export PACKAGE_VERSION=$(echo ${{ github.ref_name }} | sed -e 's/^\(release\|hotfix\|support\)\///')rc${{ github.run_number }}
+        echo "RC version is $PACKAGE_VERSION."
+        echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
+    - name: Build package
+      run: uv build
+    - name: Publish package to Test PyPI.
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        repository-url: https://test.pypi.org/legacy/
+        skip-existing: true
+    # - name: Install from testpypi and import.
+    #   run: |
+    #     i=0
+    #     n=60
+    #     exists=0
+    #     while [ $i -lt $n ] && [ $exists -eq 0 ]; do
+    #         i=$(expr $i + 1)
+    #         if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.VERSION }}\")" &> /dev/null; then
+    #             echo "$i/$n Package exists in index."
+    #             exists=1
+    #         else
+    #             echo "$i/$n Package has not appeared in index yet. Sleeping 5s."
+    #             sleep 5s
+    #         fi
+    #     done
+    #     sleep 15s
+    #     pip install --no-cache-dir --index-url https://test.pypi.org/simple ${{ env.PACKAGE_NAME }}==${{ env.VERSION }} --no-deps
+    #     pip install -r requirements.txt
+    #     python -c 'import ${{ env.MODULE_NAME }};print(${{ env.MODULE_NAME }}.__version__)'

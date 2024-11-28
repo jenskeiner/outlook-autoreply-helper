@@ -1,79 +1,121 @@
-import requests
 import logging
+import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timedelta
-import jinja2
-from .util import get_adjacent_events
-from .util import get_datetime, get_tz
-from .settings import Settings
-from .auth import get_access_token
 from zoneinfo import ZoneInfo
+
+import jinja2
+import requests
+
+from .auth import get_access_token
+from .settings import RunSettings, InitSettings, TimeZoneCache
+from .util import get_adjacent_events, get_datetime
 
 log = logging.getLogger(__name__)
 
 UTC = ZoneInfo("UTC")
 
 
-def format_date(value, fmt="%d.%m.%Y"):
-    return value.strftime(fmt) if isinstance(value, datetime) else value
+class Context:
+    """
+    Application context for storing stateful information during execution.
+    """
+
+    headers: dict | None = None
+    mailbox_settings_response: requests.Response | None = None
+    mailbox_timezone: ZoneInfo | None = None
 
 
-env = jinja2.Environment()
-env.filters["date"] = format_date
-
-
-def init(settings: Settings):
+def init(settings: InitSettings, ctx: Context = Context()):
     """
     Initialize the application by acquiring and caching an access token.
 
     Args:
         settings (Settings): Application configuration
-        args (argparse.Namespace): Command-line arguments
+        ctx (Context): Execution context
     """
-    log.info("Initializing token cache...")
+    log.info("Initializing token cache.")
     token_cache = settings.cache.get_token_cache()
 
-    log.info("Getting access token...")
-    _ = get_access_token(settings.app, token_cache)
-
-    log.info("Saving token cache...")
-    settings.cache.put_token_cache(token_cache)
-
-
-def run(settings: Settings):
-    """
-    Main execution method for managing absence automatic replies.
-
-    Detects upcoming absence events, configures automatic replies,
-    and updates mailbox settings accordingly.
-
-    Args:
-        settings (Settings): Application configuration
-        args (argparse.Namespace): Command-line arguments
-    """
-    # Token and authentication setup
-    log.info("Initializing token cache...")
-    token_cache = settings.cache.get_token_cache()
-
-    log.info("Getting access token...")
+    log.info("Getting access token.")
     access_token = get_access_token(settings.app, token_cache)
 
-    log.info("Saving token cache...")
+    log.info("Saving token cache.")
     settings.cache.put_token_cache(token_cache)
 
     # Prepare API request headers
-    headers = {"Authorization": f"Bearer {access_token}"}
+    ctx.headers = {"Authorization": f"Bearer {access_token}"}
 
     # Retrieve mailbox settings
-    mailbox_settings_response = requests.get(
-        f"{settings.app.base_url}/me/mailboxSettings", headers=headers
+    ctx.mailbox_settings_response = requests.get(
+        f"{settings.app.base_url}/me/mailboxSettings", headers=ctx.headers
     )
-    mailbox_settings_response.raise_for_status()
+    ctx.mailbox_settings_response.raise_for_status()
 
-    log.debug(f"Mailbox settings: {mailbox_settings_response.json()}")
+    log.debug(f"Mailbox settings: {ctx.mailbox_settings_response.json()}")
 
     # Determine mailbox timezone
-    mailbox_timezone = get_tz(mailbox_settings_response.json().get("timeZone"))
-    log.info(f"Mailbox timezone: {mailbox_timezone}")
+    mailbox_timezone_name = ctx.mailbox_settings_response.json().get("timeZone")
+    log.info(f"Mailbox timezone (Windows): {mailbox_timezone_name}")
+
+    timezone_cache = settings.cache.get_tz_cache()
+    log.info(f"Timezone cache: {timezone_cache}")
+
+    if not timezone_cache or timezone_cache.windows_tz != mailbox_timezone_name:
+        log.info("Updating timezone cache...")
+
+        # Retrieve Windows timezone to IANA timezone mapping.
+        windows_zones_response = requests.get(
+            "https://raw.githubusercontent.com/unicode-org/cldr/main/common/supplemental/windowsZones.xml"
+        )
+
+        # Raise an exception if the request was unsuccessful.
+        windows_zones_response.raise_for_status()
+
+        iana_tz = None
+
+        # Parse the XML content.
+        root = ElementTree.fromstring(windows_zones_response.text)
+
+        # Find the IANA timezone for the given Windows timezone.
+        for mapZone in root.findall(".//mapZone"):
+            if mapZone.get("other") == mailbox_timezone_name:
+                iana_name = mapZone.get("type").split()[0]
+                iana_tz = iana_name
+
+        if not iana_tz:
+            raise ValueError(
+                f"Failed to find IANA timezone for Windows timezone: {mailbox_timezone_name}"
+            )
+
+        # Update timezone cache.
+        timezone_cache = TimeZoneCache(
+            windows_tz=mailbox_timezone_name, iana_tz=iana_tz
+        )
+        settings.cache.put_tz_cache(timezone_cache)
+
+    ctx.mailbox_timezone = ZoneInfo(timezone_cache.iana_tz)
+    log.info(f"Mailbox timezone (IANA): {ctx.mailbox_timezone}")
+
+
+def run(settings: RunSettings, ctx: Context = Context()):
+    """
+    Main execution method for managing absence automatic replies.
+
+    Detects upcoming absence events, configures automatic replies, and updates mailbox settings accordingly.
+
+    Args:
+        settings (Settings): Application configuration
+        ctx (Context): Execution context
+    """
+    init(settings, ctx)
+
+    # Initialize Jinja2 environment with custom filters.
+    env = jinja2.Environment()
+    env.filters["date"] = (
+        lambda value: value.strftime(settings.absence.date_format)
+        if isinstance(value, datetime)
+        else value
+    )
 
     # Determine absence period
     now = datetime.now(UTC).astimezone(UTC)
@@ -81,13 +123,13 @@ def run(settings: Settings):
     end_time = (now + timedelta(days=settings.absence.future_period_days)).isoformat()
 
     log.info(
-        f"Querying calendar view for upcoming absence from {start_time} to {end_time}."
+        f"Querying calendar view for upcoming or ongoing absence from {start_time} to {end_time}."
     )
 
     # Query calendar for next absence event
     calendar_view_response = requests.get(
         f"{settings.app.base_url}/me/calendar/calendarView",
-        headers=headers,
+        headers=ctx.headers,
         params={
             "startDateTime": start_time,
             "endDateTime": end_time,
@@ -109,9 +151,11 @@ def run(settings: Settings):
 
     # Process vacation event details
     vacation_start = get_datetime(next_vacation["start"]).replace(
-        tzinfo=mailbox_timezone
+        tzinfo=ctx.mailbox_timezone
     )
-    vacation_end = get_datetime(next_vacation["end"]).replace(tzinfo=mailbox_timezone)
+    vacation_end = get_datetime(next_vacation["end"]).replace(
+        tzinfo=ctx.mailbox_timezone
+    )
 
     log.info(
         f"Found upcoming vacation event from {vacation_start.strftime('%Y-%m-%d')} to {vacation_end.strftime('%Y-%m-%d')}."
@@ -120,21 +164,21 @@ def run(settings: Settings):
     # Find adjacent vacation events
     log.info("Finding adjacent/overlapping vacation events...")
     adjacent_events = get_adjacent_events(
-        mailbox_timezone, settings, headers, next_vacation
+        ctx.mailbox_timezone, settings, ctx.headers, next_vacation
     )
     log.info(f"Found {len(adjacent_events)} adjacent/overlapping vacation events.")
 
     if adjacent_events:
         log.info("Updating vacation period to include adjacent/overlapping events.")
         vacation_end = get_datetime(adjacent_events[-1]["end"]).replace(
-            tzinfo=mailbox_timezone
+            tzinfo=ctx.mailbox_timezone
         )
         log.info(
             f"Updated vacation period to end on {vacation_end.strftime('%Y-%m-%d')}."
         )
 
     # Get current automatic replies settings.
-    auto_reply_settings = mailbox_settings_response.json().get(
+    auto_reply_settings = ctx.mailbox_settings_response.json().get(
         "automaticRepliesSetting", {}
     )
 
@@ -285,16 +329,16 @@ def run(settings: Settings):
             "automaticRepliesSetting": {
                 "status": "scheduled",
                 "scheduledStartDateTime": {
-                    "dateTime": vacation_start.astimezone(mailbox_timezone)
+                    "dateTime": vacation_start.astimezone(ctx.mailbox_timezone)
                     .replace(tzinfo=None)
                     .isoformat(),
-                    "timeZone": mailbox_timezone.key,
+                    "timeZone": ctx.mailbox_timezone.key,
                 },
                 "scheduledEndDateTime": {
-                    "dateTime": vacation_end.astimezone(mailbox_timezone)
+                    "dateTime": vacation_end.astimezone(ctx.mailbox_timezone)
                     .replace(tzinfo=None)
                     .isoformat(),
-                    "timeZone": mailbox_timezone.key,
+                    "timeZone": ctx.mailbox_timezone.key,
                 },
                 "internalReplyMessage": internal_msg,
                 "externalReplyMessage": external_msg,
@@ -307,7 +351,7 @@ def run(settings: Settings):
         if not settings.dry_run:
             update_response = requests.patch(
                 f"{settings.app.base_url}/me/mailboxSettings",
-                headers=headers,
+                headers=ctx.headers,
                 json=update_payload,
             )
 
