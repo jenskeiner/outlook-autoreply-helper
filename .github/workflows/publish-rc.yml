@@ -42,24 +42,24 @@ jobs:
     - name: Test that the package can be installed and imported.
       run: |
         i=0
-        n=60
+        max=10
         exists=0
-        while [ $i -lt $n ] && [ $exists -eq 0 ]; do
+        while [ $i -lt $max ] && [ $exists -eq 0 ]; do
             i=$(expr $i + 1)
             if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.PACKAGE_VERSION }}\")" &> /dev/null; then
-                echo "$i/$n Package exists in index."
+                echo "$i/$max Package has appeared in index."
                 exists=1
             else
-                echo "$i/$n Package has not appeared in index yet. Sleeping 5s."
+                echo "$i/$max Package has not appeared in index yet. Sleeping 5s."
                 sleep 5s
             fi
         done
         if [ $exists -ne 0 ]; then
-            sleep 30s
+            sleep 5s
             i=0
-            max=20
+            max=3
             while [ $i -lt $max ]; do
-                if uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }} --no-project -- python -c 'from importlib.metadata import version;print(version("${{ env.MODULE_NAME }}"))'; then
+                if uv run -n --refresh --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with "${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }}" --no-project -- python -c 'import ${{ env.MODULE_NAME }}'; then
                     exit 0
                 else
                     echo "The command failed. Retrying $i/$max."
