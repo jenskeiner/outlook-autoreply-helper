@@ -54,5 +54,22 @@ jobs:
                 sleep 5s
             fi
         done
-        sleep 60s
-        uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }} --no-project -- python -c 'from importlib.metadata import version;print(version("${{ env.MODULE_NAME }}"))'
+        if [ $exists -ne 0 ]; then
+            sleep 30s
+            i=0
+            max=20
+            while [ $i -lt $max ]; do
+                if uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }} --no-project -- python -c 'from importlib.metadata import version;print(version("${{ env.MODULE_NAME }}"))'; then
+                    exit 0
+                else
+                    echo "The command failed. Retrying $i/$max."
+                    i=$(expr $i + 1)
+                    sleep 5s
+                fi
+            done
+            echo "The command failed $i/$max times. Failing the job."
+            exit 1
+        else
+            echo "The package was not found in the package index. Test installation and import failed."
+            exit 1
+        fi
