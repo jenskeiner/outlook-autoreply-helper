@@ -39,22 +39,19 @@ jobs:
       with:
         repository-url: https://test.pypi.org/legacy/
         skip-existing: true
-    # - name: Install from testpypi and import.
-    #   run: |
-    #     i=0
-    #     n=60
-    #     exists=0
-    #     while [ $i -lt $n ] && [ $exists -eq 0 ]; do
-    #         i=$(expr $i + 1)
-    #         if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.VERSION }}\")" &> /dev/null; then
-    #             echo "$i/$n Package exists in index."
-    #             exists=1
-    #         else
-    #             echo "$i/$n Package has not appeared in index yet. Sleeping 5s."
-    #             sleep 5s
-    #         fi
-    #     done
-    #     sleep 15s
-    #     pip install --no-cache-dir --index-url https://test.pypi.org/simple ${{ env.PACKAGE_NAME }}==${{ env.VERSION }} --no-deps
-    #     pip install -r requirements.txt
-    #     python -c 'import ${{ env.MODULE_NAME }};print(${{ env.MODULE_NAME }}.__version__)'
+    - name: Test that the package can be installed and imported.
+      run: |
+        i=0
+        n=60
+        exists=0
+        while [ $i -lt $n ] && [ $exists -eq 0 ]; do
+            i=$(expr $i + 1)
+            if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.VERSION }}\")" &> /dev/null; then
+                echo "$i/$n Package exists in index."
+                exists=1
+            else
+                echo "$i/$n Package has not appeared in index yet. Sleeping 5s."
+                sleep 5s
+            fi
+        done
+        uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }} --no-project -- python -c "import ${{ env.MODULE_NAME }};print(${{ env.MODULE_NAME }}.__version__)"
