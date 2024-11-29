@@ -46,7 +46,7 @@ jobs:
         exists=0
         while [ $i -lt $n ] && [ $exists -eq 0 ]; do
             i=$(expr $i + 1)
-            if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.VERSION }}\")" &> /dev/null; then
+            if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.PACKAGE_VERSION }}\")" &> /dev/null; then
                 echo "$i/$n Package exists in index."
                 exists=1
             else
