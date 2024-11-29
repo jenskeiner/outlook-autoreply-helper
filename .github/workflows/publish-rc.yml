@@ -54,4 +54,4 @@ jobs:
                 sleep 5s
             fi
         done
-        uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }} --no-project -- python -c "import ${{ env.MODULE_NAME }};print(${{ env.MODULE_NAME }}.__version__)"
+        uv run -n --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with ${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }} --no-project -- python -c 'from importlib.metadata import version;print(version("${{ env.MODULE_NAME }}"))'
