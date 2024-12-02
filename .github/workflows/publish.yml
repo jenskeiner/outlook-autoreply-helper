@@ -69,6 +69,10 @@ jobs:
             echo "The package was not found in the package index. Test installation and import failed."
             exit 1
         fi
+    - name: Delete distribution files.
+      run: rm -rf dist  
+    - name: Build package
+      run: uv build
     - name: Publish package to PyPI.
       uses: pypa/gh-action-pypi-publish@release/v1
     - name: Test that the package can be installed and imported (PyPI).
