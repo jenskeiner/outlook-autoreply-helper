@@ -1,0 +1,6 @@
+<html>
+<body>
+I am out of office from {{ vacation_start | date }} to {{ vacation_end | date }}.
+I will respond to your message after my return.
+</body>
+</html>

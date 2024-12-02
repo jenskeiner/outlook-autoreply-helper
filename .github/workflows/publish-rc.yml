@@ -1,0 +1,75 @@
+name: Publish RC Python distributions to TestPyPI
+
+on:
+  push:
+    branches:
+      - 'release/**'
+      - 'hotfix/**'
+      - 'support/**'
+  workflow_dispatch:
+
+env:
+  PACKAGE_NAME: outlook-autoreply-helper
+  MODULE_NAME: outlook_autoreply_helper
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-and-publish:
+    name: Build and publish release candidate Python distribution to TestPyPI.
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true        
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Determine package version.
+      run: |
+        export PACKAGE_VERSION=$(echo ${{ github.ref_name }} | sed -e 's/^\(release\|hotfix\|support\)\///')rc${{ github.run_number }}
+        echo "RC version is $PACKAGE_VERSION."
+        echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
+    - name: Build package
+      run: uv build
+    - name: Publish package to Test PyPI.
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        repository-url: https://test.pypi.org/legacy/
+        skip-existing: true
+    - name: Test that the package can be installed and imported (Test PyPI).
+      run: |
+        i=0
+        max=10
+        exists=0
+        while [ $i -lt $max ] && [ $exists -eq 0 ]; do
+            i=$(expr $i + 1)
+            if curl -f -s https://test.pypi.org/pypi/${{ env.PACKAGE_NAME }}/json | jq -e ".releases | has(\"${{ env.PACKAGE_VERSION }}\")" &> /dev/null; then
+                echo "$i/$max Package has appeared in index."
+                exists=1
+            else
+                echo "$i/$max Package has not appeared in index yet. Sleeping 5s."
+                sleep 5s
+            fi
+        done
+        if [ $exists -ne 0 ]; then
+            sleep 5s
+            i=0
+            max=3
+            while [ $i -lt $max ]; do
+                if uv run -n --refresh --default-index https://test.pypi.org/simple --index https://pypi.org/simple --with "${{ env.PACKAGE_NAME }}==${{ env.PACKAGE_VERSION }}" --no-project -- python -c 'from importlib.metadata import version;print(version("${{ env.MODULE_NAME }}"))'; then
+                    exit 0
+                else
+                    echo "The command failed. Retrying $i/$max."
+                    i=$(expr $i + 1)
+                    sleep 5s
+                fi
+            done
+            echo "The command failed $i/$max times. Failing the job."
+            exit 1
+        else
+            echo "The package was not found in the package index. Test installation and import failed."
+            exit 1
+        fi
