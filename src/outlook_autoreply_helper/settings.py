@@ -298,7 +298,7 @@ class AbsenceSettings(BaseModel):
         default=3,
         validation_alias=AliasChoices("future_period_days", "future-period-days"),
     )
-    keyword: str = Field(default="Urlaub")
+    keyword: str = Field(default="Vacation")
     max_delta_hours: int = Field(
         default=12, validation_alias=AliasChoices("max_delta_hours", "max-delta-hours")
     )
